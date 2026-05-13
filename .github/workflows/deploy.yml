@@ -39,4 +39,5 @@ jobs:
             --no-fail-on-empty-changeset \
             --parameter-overrides \
               "MongoDbConnectionString=${{ secrets.MONGODB_CONNECTION_STRING }}" \
-              "S3BucketName=${{ secrets.S3_BUCKET_NAME }}"
+              "S3BucketName=${{ secrets.S3_BUCKET_NAME }}" \
+              "FromEmail=${{ secrets.FROM_EMAIL }}"

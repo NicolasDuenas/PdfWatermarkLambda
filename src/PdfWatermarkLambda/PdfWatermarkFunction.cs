@@ -1,6 +1,7 @@
 using Amazon.Lambda.Core;
 using Amazon.Lambda.Serialization.SystemTextJson;
 using Amazon.S3;
+using Amazon.SimpleEmailV2;
 using MongoDB.Bson;
 using MongoDB.Bson.Serialization;
 using MongoDB.Bson.Serialization.Serializers;
@@ -24,12 +25,15 @@ public class PdfWatermarkFunction
         var mongoConnStr = GetRequiredEnv("MONGODB_CONNECTION_STRING");
         var mongoDbName  = Env("MONGODB_DATABASE_NAME", "VitalityHub");
         var bucketName   = GetRequiredEnv("S3_BUCKET_NAME");
+        var fromEmail    = GetRequiredEnv("FROM_EMAIL");
 
         var db = new MongoClient(mongoConnStr).GetDatabase(mongoDbName);
-        // AmazonS3Client() with no args uses the Lambda IAM execution role automatically.
-        var s3 = new AmazonS3Client();
+        // AmazonS3Client() and AmazonSimpleEmailServiceV2Client() with no args
+        // use the Lambda IAM execution role automatically.
+        var s3  = new AmazonS3Client();
+        var ses = new AmazonSimpleEmailServiceV2Client();
 
-        _service = new PdfStampingService(db, s3, bucketName);
+        _service = new PdfStampingService(db, s3, bucketName, ses, fromEmail);
     }
 
     public async Task FunctionHandler(StampInvoicePayload payload, ILambdaContext context)

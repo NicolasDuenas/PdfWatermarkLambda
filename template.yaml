@@ -17,6 +17,10 @@ Parameters:
     Type: String
     Description: S3 bucket name where invoice PDFs are stored
 
+  FromEmail:
+    Type: String
+    Description: Verified SES sender address (e.g. facturas@vihub.app)
+
 Globals:
   Function:
     Runtime: dotnet8
@@ -37,6 +41,7 @@ Resources:
           MONGODB_CONNECTION_STRING: !Ref MongoDbConnectionString
           MONGODB_DATABASE_NAME: !Ref MongoDbDatabaseName
           S3_BUCKET_NAME: !Ref S3BucketName
+          FROM_EMAIL: !Ref FromEmail
       # Execution role must grant: s3:GetObject + s3:PutObject on the invoice bucket
 
 Outputs:
