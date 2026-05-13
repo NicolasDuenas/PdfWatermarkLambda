@@ -8,6 +8,7 @@ using MongoDB.Driver;
 using PdfSharp.Drawing;
 using PdfSharp.Pdf.IO;
 using PdfWatermarkLambda.Models;
+using System.IO.Compression;
 
 namespace PdfWatermarkLambda.Services;
 
@@ -91,7 +92,70 @@ public class PdfStampingService
             return;
         }
 
-        // 4. Update the Invoice document in MongoDB: set cancelledPdfS3Key
+        // 4. Download acuse and XML bytes (best-effort — shared between ZIP and email)
+        byte[]? acuseBytes = null;
+        byte[]? xmlBytes   = null;
+
+        if (!string.IsNullOrEmpty(payload.AcuseS3Key))
+        {
+            try
+            {
+                var acuseResp = await _s3.GetObjectAsync(_bucketName, payload.AcuseS3Key);
+                using var ms  = new MemoryStream();
+                await acuseResp.ResponseStream.CopyToAsync(ms);
+                acuseBytes = ms.ToArray();
+            }
+            catch (Exception ex)
+            {
+                logger.LogError($"Failed to download acuse XML for {payload.Uuid}: {ex.Message}");
+            }
+        }
+
+        if (!string.IsNullOrEmpty(payload.XmlS3Key))
+        {
+            try
+            {
+                var xmlResp  = await _s3.GetObjectAsync(_bucketName, payload.XmlS3Key);
+                using var ms = new MemoryStream();
+                await xmlResp.ResponseStream.CopyToAsync(ms);
+                xmlBytes = ms.ToArray();
+            }
+            catch (Exception ex)
+            {
+                logger.LogError($"Failed to download XML for {payload.Uuid}: {ex.Message}");
+            }
+        }
+
+        // 5. Create and upload the cancelled ZIP (stamped PDF + original XML + acuse)
+        string? cancelledZipKey = null;
+        try
+        {
+            var entries = new List<(string Name, byte[] Data)>
+            {
+                ($"{payload.Uuid}_CANCELADA.pdf", stampedBytes)
+            };
+            if (xmlBytes   is not null) entries.Add(($"{payload.Uuid}.xml",       xmlBytes));
+            if (acuseBytes is not null) entries.Add(($"{payload.Uuid}_acuse.xml", acuseBytes));
+
+            var zipBytes = CreateZip(entries);
+            cancelledZipKey = $"cfdi/{payload.CompanyId}/{payload.Uuid}_cancelada.zip";
+            using var zipStream = new MemoryStream(zipBytes);
+            await _s3.PutObjectAsync(new PutObjectRequest
+            {
+                BucketName  = _bucketName,
+                Key         = cancelledZipKey,
+                InputStream = zipStream,
+                ContentType = "application/zip",
+            });
+            logger.LogInformation($"Uploaded cancelled ZIP to s3://{_bucketName}/{cancelledZipKey}");
+        }
+        catch (Exception ex)
+        {
+            logger.LogError($"Failed to create/upload cancelled ZIP for invoice {payload.Uuid}: {ex.Message}");
+            cancelledZipKey = null;
+        }
+
+        // 6. Update MongoDB: cancelledPdfS3Key + cancelledZipS3Key
         try
         {
             var collection = _db.GetCollection<BsonDocument>("Invoice");
@@ -99,6 +163,8 @@ public class PdfStampingService
                 Builders<BsonDocument>.Filter.Eq("uuid", payload.Uuid),
                 Builders<BsonDocument>.Filter.Eq("companyId", payload.CompanyId));
             var update = Builders<BsonDocument>.Update.Set("cancelledPdfS3Key", cancelledKey);
+            if (!string.IsNullOrEmpty(cancelledZipKey))
+                update = update.Set("cancelledZipS3Key", cancelledZipKey);
             var result = await collection.UpdateOneAsync(filter, update);
             logger.LogInformation($"MongoDB update for {payload.Uuid}: matched={result.MatchedCount}, modified={result.ModifiedCount}");
         }
@@ -107,24 +173,9 @@ public class PdfStampingService
             logger.LogError($"Failed to update MongoDB for invoice {payload.Uuid}: {ex.Message}");
         }
 
-        // 5. Send email to receptor with stamped PDF + acuse XML attached
-        if (!string.IsNullOrEmpty(payload.ReceptorEmail) && !string.IsNullOrEmpty(payload.AcuseS3Key))
-        {
-            byte[]? acuseBytes = null;
-            try
-            {
-                var acuseResponse = await _s3.GetObjectAsync(_bucketName, payload.AcuseS3Key);
-                using var ms = new MemoryStream();
-                await acuseResponse.ResponseStream.CopyToAsync(ms);
-                acuseBytes = ms.ToArray();
-            }
-            catch (Exception ex)
-            {
-                logger.LogError($"Failed to download acuse XML for email {payload.Uuid}: {ex.Message}");
-            }
-
+        // 7. Send cancellation email to receptor
+        if (!string.IsNullOrEmpty(payload.ReceptorEmail))
             await SendCancellationEmailAsync(payload, stampedBytes, acuseBytes, logger);
-        }
     }
 
     private async Task SendCancellationEmailAsync(
@@ -280,6 +331,109 @@ public class PdfStampingService
         for (int i = 0; i < base64.Length; i += 76)
             sb.Append(base64, i, Math.Min(76, base64.Length - i)).Append("\r\n");
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Creates the initial invoice ZIP (PDF + XML) from S3 and stores its key in MongoDB.
+    /// Called immediately after invoice generation — no watermarking.
+    /// </summary>
+    public async Task GenerateInvoiceZipAsync(StampInvoicePayload payload, ILambdaLogger logger)
+    {
+        if (string.IsNullOrEmpty(payload.PdfS3Key) || string.IsNullOrEmpty(payload.XmlS3Key))
+        {
+            logger.LogError($"GenerateInvoiceZip: PdfS3Key or XmlS3Key missing for invoice {payload.Uuid}.");
+            return;
+        }
+
+        // 1. Download PDF and XML from S3
+        byte[] pdfBytes;
+        byte[] xmlBytes;
+
+        try
+        {
+            var pdfResp = await _s3.GetObjectAsync(_bucketName, payload.PdfS3Key);
+            using var ms = new MemoryStream();
+            await pdfResp.ResponseStream.CopyToAsync(ms);
+            pdfBytes = ms.ToArray();
+            logger.LogInformation($"Downloaded PDF ({pdfBytes.Length} bytes) for initial ZIP of {payload.Uuid}.");
+        }
+        catch (Exception ex)
+        {
+            logger.LogError($"Failed to download PDF {payload.PdfS3Key} for initial ZIP: {ex.Message}");
+            return;
+        }
+
+        try
+        {
+            var xmlResp = await _s3.GetObjectAsync(_bucketName, payload.XmlS3Key);
+            using var ms = new MemoryStream();
+            await xmlResp.ResponseStream.CopyToAsync(ms);
+            xmlBytes = ms.ToArray();
+            logger.LogInformation($"Downloaded XML ({xmlBytes.Length} bytes) for initial ZIP of {payload.Uuid}.");
+        }
+        catch (Exception ex)
+        {
+            logger.LogError($"Failed to download XML {payload.XmlS3Key} for initial ZIP: {ex.Message}");
+            return;
+        }
+
+        // 2. Create ZIP in memory
+        var zipBytes = CreateZip(new[]
+        {
+            ($"{payload.Uuid}.pdf", pdfBytes),
+            ($"{payload.Uuid}.xml", xmlBytes),
+        });
+
+        // 3. Upload ZIP to S3
+        var zipKey = $"cfdi/{payload.CompanyId}/{payload.Uuid}.zip";
+        try
+        {
+            using var zipStream = new MemoryStream(zipBytes);
+            await _s3.PutObjectAsync(new PutObjectRequest
+            {
+                BucketName  = _bucketName,
+                Key         = zipKey,
+                InputStream = zipStream,
+                ContentType = "application/zip",
+            });
+            logger.LogInformation($"Uploaded initial invoice ZIP to s3://{_bucketName}/{zipKey}");
+        }
+        catch (Exception ex)
+        {
+            logger.LogError($"Failed to upload initial ZIP for invoice {payload.Uuid}: {ex.Message}");
+            return;
+        }
+
+        // 4. Update MongoDB: set zipS3Key
+        try
+        {
+            var collection = _db.GetCollection<BsonDocument>("Invoice");
+            var filter = Builders<BsonDocument>.Filter.And(
+                Builders<BsonDocument>.Filter.Eq("uuid", payload.Uuid),
+                Builders<BsonDocument>.Filter.Eq("companyId", payload.CompanyId));
+            var update = Builders<BsonDocument>.Update.Set("zipS3Key", zipKey);
+            var result = await collection.UpdateOneAsync(filter, update);
+            logger.LogInformation($"MongoDB zipS3Key update for {payload.Uuid}: matched={result.MatchedCount}, modified={result.ModifiedCount}");
+        }
+        catch (Exception ex)
+        {
+            logger.LogError($"Failed to update MongoDB zipS3Key for invoice {payload.Uuid}: {ex.Message}");
+        }
+    }
+
+    private static byte[] CreateZip(IEnumerable<(string Name, byte[] Data)> entries)
+    {
+        using var ms = new MemoryStream();
+        using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            foreach (var (name, data) in entries)
+            {
+                var entry = zip.CreateEntry(name, CompressionLevel.Optimal);
+                using var es = entry.Open();
+                es.Write(data, 0, data.Length);
+            }
+        }
+        return ms.ToArray();
     }
 
     private static string HtmlEncode(string? s)

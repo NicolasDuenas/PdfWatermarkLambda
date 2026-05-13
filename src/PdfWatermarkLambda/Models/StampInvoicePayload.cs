@@ -2,14 +2,23 @@ namespace PdfWatermarkLambda.Models;
 
 /// <summary>
 /// Payload sent by the VitalityHub backend to invoke this Lambda.
-/// The Lambda downloads the original PDF from S3, stamps "CANCELADA", uploads
-/// the result to a separate S3 key, and sends the complete cancellation email
-/// (acuse XML + cancelled PDF) to the receptor.
 /// </summary>
 public class StampInvoicePayload
 {
+    /// <summary>
+    /// Controls what the Lambda does:
+    /// <list type="bullet">
+    ///   <item><c>null</c> / <c>"WatermarkAndZip"</c> — stamp "CANCELADA" on the PDF, create the cancelled ZIP, send cancellation email.</item>
+    ///   <item><c>"GenerateInvoiceZip"</c> — create the initial invoice ZIP (PDF + XML) after invoice generation; no watermarking.</item>
+    /// </list>
+    /// </summary>
+    public string? Action { get; set; }
+
     /// <summary>S3 key of the original CFDI PDF (e.g. "cfdi/{companyId}/{uuid}.pdf").</summary>
     public string PdfS3Key { get; set; } = string.Empty;
+
+    /// <summary>S3 key of the original CFDI XML. Required for GenerateInvoiceZip; used in the cancelled ZIP for WatermarkAndZip.</summary>
+    public string? XmlS3Key { get; set; }
 
     /// <summary>Invoice UUID (folio fiscal).</summary>
     public string Uuid { get; set; } = string.Empty;
@@ -17,7 +26,7 @@ public class StampInvoicePayload
     /// <summary>Company GUID (string form) — used for the S3 key and MongoDB filter.</summary>
     public string CompanyId { get; set; } = string.Empty;
 
-    /// <summary>S3 key of the acuse de cancelación XML. When set, it is attached to the email.</summary>
+    /// <summary>S3 key of the acuse de cancelación XML. When set, it is attached to the email and included in the cancelled ZIP.</summary>
     public string? AcuseS3Key { get; set; }
 
     /// <summary>Receptor email address. When set, sends the cancellation email.</summary>

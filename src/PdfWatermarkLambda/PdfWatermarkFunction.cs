@@ -44,15 +44,29 @@ public class PdfWatermarkFunction
     public async Task FunctionHandler(StampInvoicePayload payload, ILambdaContext context)
     {
         context.Logger.LogInformation(
-            $"PdfWatermarkLambda triggered — Uuid={payload.Uuid} CompanyId={payload.CompanyId}");
+            $"PdfWatermarkLambda triggered — Action={payload.Action ?? "WatermarkAndZip"} Uuid={payload.Uuid} CompanyId={payload.CompanyId}");
 
-        if (string.IsNullOrWhiteSpace(payload.PdfS3Key) || string.IsNullOrWhiteSpace(payload.Uuid))
+        if (string.IsNullOrWhiteSpace(payload.Uuid))
         {
-            context.Logger.LogError("Invalid payload: PdfS3Key or Uuid is missing.");
+            context.Logger.LogError("Invalid payload: Uuid is missing.");
             return;
         }
 
-        await _service.StampAndSaveAsync(payload, context.Logger);
+        if (payload.Action == "GenerateInvoiceZip")
+        {
+            await _service.GenerateInvoiceZipAsync(payload, context.Logger);
+        }
+        else
+        {
+            // Default action: WatermarkAndZip (stamp cancelled PDF + create cancelled ZIP + send email)
+            if (string.IsNullOrWhiteSpace(payload.PdfS3Key))
+            {
+                context.Logger.LogError("Invalid payload: PdfS3Key is missing for WatermarkAndZip.");
+                return;
+            }
+            await _service.StampAndSaveAsync(payload, context.Logger);
+        }
+
         context.Logger.LogInformation("PdfWatermarkLambda completed.");
     }
 
