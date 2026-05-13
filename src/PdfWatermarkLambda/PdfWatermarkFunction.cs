@@ -1,0 +1,56 @@
+using Amazon.Lambda.Core;
+using Amazon.Lambda.Serialization.SystemTextJson;
+using Amazon.S3;
+using MongoDB.Bson;
+using MongoDB.Bson.Serialization;
+using MongoDB.Bson.Serialization.Serializers;
+using MongoDB.Driver;
+using PdfWatermarkLambda.Models;
+using PdfWatermarkLambda.Services;
+
+[assembly: LambdaSerializer(typeof(DefaultLambdaJsonSerializer))]
+
+namespace PdfWatermarkLambda;
+
+public class PdfWatermarkFunction
+{
+    private readonly PdfStampingService _service;
+
+    public PdfWatermarkFunction()
+    {
+        try { BsonSerializer.RegisterSerializer(new GuidSerializer(BsonType.String)); }
+        catch (BsonSerializationException) { /* already registered in warm container */ }
+
+        var mongoConnStr = GetRequiredEnv("MONGODB_CONNECTION_STRING");
+        var mongoDbName  = Env("MONGODB_DATABASE_NAME", "VitalityHub");
+        var bucketName   = GetRequiredEnv("S3_BUCKET_NAME");
+
+        var db = new MongoClient(mongoConnStr).GetDatabase(mongoDbName);
+        // AmazonS3Client() with no args uses the Lambda IAM execution role automatically.
+        var s3 = new AmazonS3Client();
+
+        _service = new PdfStampingService(db, s3, bucketName);
+    }
+
+    public async Task FunctionHandler(StampInvoicePayload payload, ILambdaContext context)
+    {
+        context.Logger.LogInformation(
+            $"PdfWatermarkLambda triggered — Uuid={payload.Uuid} CompanyId={payload.CompanyId}");
+
+        if (string.IsNullOrWhiteSpace(payload.PdfS3Key) || string.IsNullOrWhiteSpace(payload.Uuid))
+        {
+            context.Logger.LogError("Invalid payload: PdfS3Key or Uuid is missing.");
+            return;
+        }
+
+        await _service.StampAndSaveAsync(payload, context.Logger);
+        context.Logger.LogInformation("PdfWatermarkLambda completed.");
+    }
+
+    private static string GetRequiredEnv(string name)
+        => Environment.GetEnvironmentVariable(name)
+           ?? throw new InvalidOperationException($"Required env var '{name}' is not set.");
+
+    private static string Env(string name, string fallback)
+        => Environment.GetEnvironmentVariable(name) ?? fallback;
+}

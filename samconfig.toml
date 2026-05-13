@@ -1,0 +1,10 @@
+version = 0.1
+[default]
+[default.global.parameters]
+stack_name = "pdf-watermark-lambda"
+region = "us-east-1"
+confirm_changeset = false
+
+[default.deploy.parameters]
+capabilities = "CAPABILITY_IAM"
+parameter_overrides = "S3BucketName=<YOUR_BUCKET_NAME>"

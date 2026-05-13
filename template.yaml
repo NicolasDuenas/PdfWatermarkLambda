@@ -1,0 +1,45 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+
+Description: PdfWatermarkLambda — stamps "CANCELADA" on cancelled invoice PDFs for VitalityHub
+
+Parameters:
+  MongoDbConnectionString:
+    Type: String
+    NoEcho: true
+    Description: MongoDB Atlas connection string
+
+  MongoDbDatabaseName:
+    Type: String
+    Default: VitalityHub
+
+  S3BucketName:
+    Type: String
+    Description: S3 bucket name where invoice PDFs are stored
+
+Globals:
+  Function:
+    Runtime: dotnet8
+    Architectures:
+      - x86_64
+    CodeUri: src/PdfWatermarkLambda/
+
+Resources:
+  PdfWatermarkFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: PdfWatermarkLambda
+      Handler: PdfWatermarkLambda::PdfWatermarkLambda.PdfWatermarkFunction::FunctionHandler
+      MemorySize: 512
+      Timeout: 60
+      Environment:
+        Variables:
+          MONGODB_CONNECTION_STRING: !Ref MongoDbConnectionString
+          MONGODB_DATABASE_NAME: !Ref MongoDbDatabaseName
+          S3_BUCKET_NAME: !Ref S3BucketName
+      # Execution role must grant: s3:GetObject + s3:PutObject on the invoice bucket
+
+Outputs:
+  PdfWatermarkFunctionArn:
+    Description: PDF Watermark Lambda function ARN
+    Value: !GetAtt PdfWatermarkFunction.Arn
