@@ -4,7 +4,8 @@ version = 0.1
 stack_name = "pdf-watermark-lambda"
 region = "us-east-1"
 confirm_changeset = false
+capabilities = "CAPABILITY_IAM"
+resolve_s3 = true
 
 [default.deploy.parameters]
-capabilities = "CAPABILITY_IAM"
 parameter_overrides = "S3BucketName=vihub-storage"
