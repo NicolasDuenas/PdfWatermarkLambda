@@ -6,6 +6,8 @@ using MongoDB.Bson;
 using MongoDB.Bson.Serialization;
 using MongoDB.Bson.Serialization.Serializers;
 using MongoDB.Driver;
+using PdfSharp.Fonts;
+using PdfWatermarkLambda.Fonts;
 using PdfWatermarkLambda.Models;
 using PdfWatermarkLambda.Services;
 
@@ -19,6 +21,9 @@ public class PdfWatermarkFunction
 
     public PdfWatermarkFunction()
     {
+        // Register font resolver FIRST — Lambda runs on Linux with no system fonts
+        GlobalFontSettings.FontResolver = new LambdaFontResolver();
+
         try { BsonSerializer.RegisterSerializer(new GuidSerializer(BsonType.String)); }
         catch (BsonSerializationException) { /* already registered in warm container */ }
 

@@ -10,6 +10,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="Fonts\DejaVuSans-Bold.ttf" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Amazon.Lambda.Core" Version="2.2.0" />
     <PackageReference Include="Amazon.Lambda.Serialization.SystemTextJson" Version="2.4.1" />
     <PackageReference Include="AWSSDK.S3" Version="4.0.19.1" />
