@@ -19,7 +19,8 @@ Parameters:
 
   FromEmail:
     Type: String
-    Description: Verified SES sender address (e.g. facturas@vihub.app)
+    Default: "invoices@vihub.app"
+    Description: Verified SES sender address (e.g. invoices@vihub.app)
 
 Globals:
   Function:

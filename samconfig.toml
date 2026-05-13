@@ -8,4 +8,4 @@ capabilities = "CAPABILITY_IAM"
 resolve_s3 = true
 
 [default.deploy.parameters]
-parameter_overrides = "S3BucketName=vihub-storage"
+parameter_overrides = "S3BucketName=vihub-storage FromEmail=invoices@vihub.app"
