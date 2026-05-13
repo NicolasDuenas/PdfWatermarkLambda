@@ -7,4 +7,4 @@ confirm_changeset = false
 
 [default.deploy.parameters]
 capabilities = "CAPABILITY_IAM"
-parameter_overrides = "S3BucketName=<YOUR_BUCKET_NAME>"
+parameter_overrides = "S3BucketName=vihub-storage"
