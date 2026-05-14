@@ -56,6 +56,16 @@ public class PdfWatermarkFunction
         {
             await _service.GenerateInvoiceZipAsync(payload, context.Logger);
         }
+        else if (payload.Action == "WatermarkPaymentAndZip")
+        {
+            // Stamp the CRP PDF and update InvoicePayment collection (not Invoice)
+            if (string.IsNullOrWhiteSpace(payload.PdfS3Key))
+            {
+                context.Logger.LogError("Invalid payload: PdfS3Key is missing for WatermarkPaymentAndZip.");
+                return;
+            }
+            await _service.StampPaymentAndSaveAsync(payload, context.Logger);
+        }
         else
         {
             // Default action: WatermarkAndZip (stamp cancelled PDF + create cancelled ZIP + send email)

@@ -334,6 +334,135 @@ public class PdfStampingService
     }
 
     /// <summary>
+    /// Same as StampAndSaveAsync but for a CRP (Complemento de Recepción de Pagos).
+    /// Updates the <c>InvoicePayment</c> MongoDB collection (not <c>Invoice</c>),
+    /// filtering by <c>paymentUuid</c> = payload.Uuid.
+    /// No cancellation email is sent (the receptor already receives the invoice cancellation email if applicable).
+    /// </summary>
+    public async Task StampPaymentAndSaveAsync(StampInvoicePayload payload, ILambdaLogger logger)
+    {
+        byte[] originalBytes;
+        try
+        {
+            var response = await _s3.GetObjectAsync(_bucketName, payload.PdfS3Key);
+            using var ms = new MemoryStream();
+            await response.ResponseStream.CopyToAsync(ms);
+            originalBytes = ms.ToArray();
+            logger.LogInformation($"CRP: Downloaded original PDF ({originalBytes.Length} bytes) from {payload.PdfS3Key}");
+        }
+        catch (Exception ex)
+        {
+            logger.LogError($"CRP: Failed to download PDF {payload.PdfS3Key}: {ex.Message}");
+            return;
+        }
+
+        byte[] stampedBytes;
+        try
+        {
+            stampedBytes = StampCancelled(originalBytes);
+            logger.LogInformation($"CRP: Stamped CANCELADA watermark — output {stampedBytes.Length} bytes");
+        }
+        catch (Exception ex)
+        {
+            logger.LogError($"CRP: Failed to stamp PDF for payment {payload.Uuid}: {ex.Message}");
+            return;
+        }
+
+        var cancelledKey = $"cfdi/{payload.CompanyId}/{payload.Uuid}_cancelada.pdf";
+        try
+        {
+            using var pdfStream = new MemoryStream(stampedBytes);
+            await _s3.PutObjectAsync(new PutObjectRequest
+            {
+                BucketName  = _bucketName,
+                Key         = cancelledKey,
+                InputStream = pdfStream,
+                ContentType = "application/pdf",
+            });
+            logger.LogInformation($"CRP: Uploaded cancelled PDF to s3://{_bucketName}/{cancelledKey}");
+        }
+        catch (Exception ex)
+        {
+            logger.LogError($"CRP: Failed to upload cancelled PDF for payment {payload.Uuid}: {ex.Message}");
+            return;
+        }
+
+        byte[]? acuseBytes = null;
+        byte[]? xmlBytes   = null;
+
+        if (!string.IsNullOrEmpty(payload.AcuseS3Key))
+        {
+            try
+            {
+                var acuseResp = await _s3.GetObjectAsync(_bucketName, payload.AcuseS3Key);
+                using var ms  = new MemoryStream();
+                await acuseResp.ResponseStream.CopyToAsync(ms);
+                acuseBytes = ms.ToArray();
+            }
+            catch (Exception ex) { logger.LogError($"CRP: Failed to download acuse XML: {ex.Message}"); }
+        }
+
+        if (!string.IsNullOrEmpty(payload.XmlS3Key))
+        {
+            try
+            {
+                var xmlResp = await _s3.GetObjectAsync(_bucketName, payload.XmlS3Key);
+                using var ms = new MemoryStream();
+                await xmlResp.ResponseStream.CopyToAsync(ms);
+                xmlBytes = ms.ToArray();
+            }
+            catch (Exception ex) { logger.LogError($"CRP: Failed to download XML: {ex.Message}"); }
+        }
+
+        // Create cancelled ZIP for the CRP
+        string? cancelledZipKey = null;
+        try
+        {
+            var entries = new List<(string Name, byte[] Data)>
+            {
+                ($"{payload.Uuid}_CANCELADA.pdf", stampedBytes)
+            };
+            if (xmlBytes   is not null) entries.Add(($"{payload.Uuid}.xml",       xmlBytes));
+            if (acuseBytes is not null) entries.Add(($"{payload.Uuid}_acuse.xml", acuseBytes));
+
+            var zipBytes = CreateZip(entries);
+            cancelledZipKey = $"cfdi/{payload.CompanyId}/{payload.Uuid}_cancelada.zip";
+            using var zipStream = new MemoryStream(zipBytes);
+            await _s3.PutObjectAsync(new PutObjectRequest
+            {
+                BucketName  = _bucketName,
+                Key         = cancelledZipKey,
+                InputStream = zipStream,
+                ContentType = "application/zip",
+            });
+            logger.LogInformation($"CRP: Uploaded cancelled ZIP to s3://{_bucketName}/{cancelledZipKey}");
+        }
+        catch (Exception ex)
+        {
+            logger.LogError($"CRP: Failed to create cancelled ZIP for payment {payload.Uuid}: {ex.Message}");
+            cancelledZipKey = null;
+        }
+
+        // Update InvoicePayment collection (filtering by paymentUuid, not uuid)
+        try
+        {
+            var collection = _db.GetCollection<BsonDocument>("InvoicePayment");
+            var filter = Builders<BsonDocument>.Filter.And(
+                Builders<BsonDocument>.Filter.Eq("paymentUuid", payload.Uuid),
+                Builders<BsonDocument>.Filter.Eq("companyId", payload.CompanyId));
+            var update = Builders<BsonDocument>.Update.Set("cancelledPdfS3Key", cancelledKey);
+            if (!string.IsNullOrEmpty(cancelledZipKey))
+                update = update.Set("cancelledZipS3Key", cancelledZipKey);
+            var result = await collection.UpdateOneAsync(filter, update);
+            logger.LogInformation($"CRP: MongoDB InvoicePayment update for {payload.Uuid}: matched={result.MatchedCount}, modified={result.ModifiedCount}");
+        }
+        catch (Exception ex)
+        {
+            logger.LogError($"CRP: Failed to update InvoicePayment MongoDB for {payload.Uuid}: {ex.Message}");
+        }
+    }
+
+    /// <summary>
     /// Creates the initial invoice ZIP (PDF + XML) from S3 and stores its key in MongoDB.
     /// Called immediately after invoice generation — no watermarking.
     /// </summary>
