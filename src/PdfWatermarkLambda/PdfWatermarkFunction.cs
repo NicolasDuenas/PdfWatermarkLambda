@@ -56,6 +56,15 @@ public class PdfWatermarkFunction
         {
             await _service.GenerateInvoiceZipAsync(payload, context.Logger);
         }
+        else if (payload.Action == "GeneratePaymentZip")
+        {
+            if (string.IsNullOrWhiteSpace(payload.PdfS3Key))
+            {
+                context.Logger.LogError("Invalid payload: PdfS3Key is missing for GeneratePaymentZip.");
+                return;
+            }
+            await _service.GeneratePaymentZipAsync(payload, context.Logger);
+        }
         else if (payload.Action == "WatermarkPaymentAndZip")
         {
             // Stamp the CRP PDF and update InvoicePayment collection (not Invoice)

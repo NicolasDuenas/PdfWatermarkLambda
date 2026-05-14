@@ -334,6 +334,86 @@ public class PdfStampingService
     }
 
     /// <summary>
+    /// Creates the initial CRP payment ZIP (PDF + XML) and writes <c>zipS3Key</c> to the
+    /// <c>InvoicePayment</c> MongoDB collection. No watermarking — this is for the active CRP.
+    /// </summary>
+    public async Task GeneratePaymentZipAsync(StampInvoicePayload payload, ILambdaLogger logger)
+    {
+        byte[]? pdfBytes = null;
+        byte[]? xmlBytes = null;
+
+        if (!string.IsNullOrEmpty(payload.PdfS3Key))
+        {
+            try
+            {
+                var resp = await _s3.GetObjectAsync(_bucketName, payload.PdfS3Key);
+                using var ms = new MemoryStream();
+                await resp.ResponseStream.CopyToAsync(ms);
+                pdfBytes = ms.ToArray();
+            }
+            catch (Exception ex) { logger.LogError($"CRP-ZIP: Failed to download PDF {payload.PdfS3Key}: {ex.Message}"); }
+        }
+
+        if (!string.IsNullOrEmpty(payload.XmlS3Key))
+        {
+            try
+            {
+                var resp = await _s3.GetObjectAsync(_bucketName, payload.XmlS3Key);
+                using var ms = new MemoryStream();
+                await resp.ResponseStream.CopyToAsync(ms);
+                xmlBytes = ms.ToArray();
+            }
+            catch (Exception ex) { logger.LogError($"CRP-ZIP: Failed to download XML {payload.XmlS3Key}: {ex.Message}"); }
+        }
+
+        if (pdfBytes is null && xmlBytes is null)
+        {
+            logger.LogError($"CRP-ZIP: No files to zip for payment {payload.Uuid}.");
+            return;
+        }
+
+        string? zipKey = null;
+        try
+        {
+            var entries = new List<(string Name, byte[] Data)>();
+            if (pdfBytes is not null) entries.Add(($"{payload.Uuid}.pdf", pdfBytes));
+            if (xmlBytes is not null) entries.Add(($"{payload.Uuid}.xml", xmlBytes));
+
+            var zipBytes = CreateZip(entries);
+            zipKey = $"cfdi/{payload.CompanyId}/{payload.Uuid}_crp.zip";
+            using var zipStream = new MemoryStream(zipBytes);
+            await _s3.PutObjectAsync(new Amazon.S3.Model.PutObjectRequest
+            {
+                BucketName  = _bucketName,
+                Key         = zipKey,
+                InputStream = zipStream,
+                ContentType = "application/zip",
+            });
+            logger.LogInformation($"CRP-ZIP: Uploaded initial ZIP to s3://{_bucketName}/{zipKey}");
+        }
+        catch (Exception ex)
+        {
+            logger.LogError($"CRP-ZIP: Failed to create ZIP for payment {payload.Uuid}: {ex.Message}");
+            return;
+        }
+
+        try
+        {
+            var collection = _db.GetCollection<BsonDocument>("InvoicePayment");
+            var filter = Builders<BsonDocument>.Filter.And(
+                Builders<BsonDocument>.Filter.Eq("paymentUuid", payload.Uuid),
+                Builders<BsonDocument>.Filter.Eq("companyId", payload.CompanyId));
+            var update = Builders<BsonDocument>.Update.Set("zipS3Key", zipKey);
+            var result = await collection.UpdateOneAsync(filter, update);
+            logger.LogInformation($"CRP-ZIP: MongoDB InvoicePayment update for {payload.Uuid}: matched={result.MatchedCount}, modified={result.ModifiedCount}");
+        }
+        catch (Exception ex)
+        {
+            logger.LogError($"CRP-ZIP: Failed to update InvoicePayment MongoDB for {payload.Uuid}: {ex.Message}");
+        }
+    }
+
+    /// <summary>
     /// Same as StampAndSaveAsync but for a CRP (Complemento de Recepción de Pagos).
     /// Updates the <c>InvoicePayment</c> MongoDB collection (not <c>Invoice</c>),
     /// filtering by <c>paymentUuid</c> = payload.Uuid.
